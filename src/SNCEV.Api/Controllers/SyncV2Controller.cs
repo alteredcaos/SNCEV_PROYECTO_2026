@@ -7,6 +7,7 @@ using Dapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
+using SNCEV.Api.Services;
 
 namespace SNCEV.Api.Controllers;
 
@@ -19,8 +20,10 @@ public sealed class SyncV2Controller : ControllerBase
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<SyncV2Controller> _logger;
-    public SyncV2Controller(IConfiguration configuration, ILogger<SyncV2Controller> logger)
-    { _configuration = configuration; _logger = logger; }
+    private readonly AutorizacionCluesService _autorizacion;
+    public SyncV2Controller(IConfiguration configuration, ILogger<SyncV2Controller> logger,
+        AutorizacionCluesService autorizacion)
+    { _configuration = configuration; _logger = logger; _autorizacion = autorizacion; }
 
     public sealed record PushRequest(Guid DispositivoId, List<OperacionDto> Operaciones);
     public sealed record OperacionDto(Guid OperacionId, string Entidad, Guid EntidadLocalId, JsonElement Payload);
@@ -39,7 +42,7 @@ public sealed class SyncV2Controller : ControllerBase
         // Claim names must be checked against the actual AuthController token generator.
         string? subject = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
         string? clues = User.FindFirstValue("clues") ?? User.FindFirstValue("clues_asignada");
-        if (!Guid.TryParse(subject, out var userId) || string.IsNullOrWhiteSpace(clues))
+        if (!Guid.TryParse(subject, out var userId))
             return Forbid();
         if (request.DispositivoId == Guid.Empty || request.Operaciones is null || request.Operaciones.Count is < 1 or > 50)
             return BadRequest(new { error = "Lote inválido (1 a 50 operaciones)." });
@@ -53,7 +56,26 @@ public sealed class SyncV2Controller : ControllerBase
         // Process patients first, preserving result order by operation UUID.
         foreach (var op in request.Operaciones.OrderBy(x => x.Entidad == "Paciente" ? 0 : 1))
         {
-            try { results.Add(await ProcessOne(conn, request.DispositivoId, userId, clues, op, ct)); }
+            try
+            {
+                if (op.Entidad == "VacunaAplicada")
+                {
+                    DosisDto? dosis;
+                    try { dosis = op.Payload.Deserialize<DosisDto>(new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+                    catch (JsonException) { results.Add(new(op.OperacionId, "Rechazada", null, "DOSIS_INVALIDA")); continue; }
+                    if (dosis is null || string.IsNullOrWhiteSpace(dosis.UnidadMedicaClues))
+                    { results.Add(new(op.OperacionId, "Rechazada", null, "DOSIS_INVALIDA")); continue; }
+                    if (!await _autorizacion.PuedeAsync(User, dosis.UnidadMedicaClues, "VACUNA_REGISTRAR", ct))
+                    { results.Add(new(op.OperacionId, "Rechazada", null, "CLUES_NO_AUTORIZADA")); continue; }
+                }
+                else if (op.Entidad == "Paciente")
+                {
+                    // Alta/conciliación nominal requiere política específica de ámbito.
+                    results.Add(new(op.OperacionId, "Rechazada", null, "PACIENTE_SIN_POLITICA_AMBITO"));
+                    continue;
+                }
+                results.Add(await ProcessOne(conn, request.DispositivoId, userId, clues ?? "", op, ct));
+            }
             catch (SqlException ex)
             {
                 _logger.LogError(ex, "Error SQL al procesar operación {OperationId}", op.OperacionId);
@@ -93,7 +115,7 @@ INSERT INTO sncev_sync.operacion
 (operacion_id,dispositivo_id,entidad,entidad_local_id,usuario_id,clues,payload_sha256,estado)
 VALUES (@Op,@Device,@Entity,@Local,@UserId,@Clues,@Hash,'Recibida')",
                 new { Op=op.OperacionId, Device=device, Entity=op.Entidad, Local=op.EntidadLocalId,
-                    UserId=userId, Clues=clues, Hash=hash }, tx, cancellationToken: ct));
+                    UserId=userId, Clues=op.Entidad == "VacunaAplicada" ? op.Payload.Deserialize<DosisDto>(new JsonSerializerOptions(JsonSerializerDefaults.Web))?.UnidadMedicaClues : clues, Hash=hash }, tx, cancellationToken: ct));
 
             string state = "Conflicto";
             string? code = null;
@@ -139,7 +161,7 @@ VALUES (@Device,@Local,@Central,@Op)",
                 var d = op.Payload.Deserialize<DosisDto>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 if (d == null || d.Id != op.EntidadLocalId || d.PacienteId == Guid.Empty ||
                     d.VacunaId <= 0 || d.NumeroDosis <= 0 || d.NumeroDosis > 255 ||
-                    string.IsNullOrWhiteSpace(d.Lote) || d.UnidadMedicaClues != clues ||
+                    string.IsNullOrWhiteSpace(d.Lote) || string.IsNullOrWhiteSpace(d.UnidadMedicaClues) ||
                     d.FechaAplicacion.Date > DateTime.UtcNow.Date)
                     (state, code) = ("Rechazada", "DOSIS_INVALIDA");
                 else
