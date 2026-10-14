@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    x:Class="SNCEV.MobileApp.Views.LoginPage"
+    Title="Acceso SNCEV"
+    BackgroundColor="#101820">
+
+    <ScrollView>
+        <VerticalStackLayout
+            Padding="30"
+            Spacing="20"
+            VerticalOptions="Center">
+
+            <Label
+                Text="Cartilla Electrónica de Vacunación"
+                FontSize="25"
+                FontAttributes="Bold"
+                TextColor="White"
+                HorizontalTextAlignment="Center" />
+
+            <Label
+                Text="Sistema Nacional de Cartilla Electrónica"
+                FontSize="14"
+                TextColor="#BBBBBB"
+                HorizontalTextAlignment="Center" />
+
+            <Entry
+                x:Name="TxtUsuario"
+                Placeholder="Usuario"
+                TextColor="White"
+                PlaceholderColor="#AAAAAA" />
+
+            <Entry
+                x:Name="TxtPassword"
+                Placeholder="Contraseña"
+                IsPassword="True"
+                TextColor="White"
+                PlaceholderColor="#AAAAAA" />
+
+            <Button
+                x:Name="BtnLogin"
+                Text="Iniciar sesión"
+                BackgroundColor="#1673C9"
+                TextColor="White"
+                Clicked="OnLoginClicked" />
+
+            <ActivityIndicator
+                x:Name="Indicador"
+                IsVisible="False"
+                IsRunning="False"
+                Color="#28A745" />
+
+            <Label
+                x:Name="LblMensaje"
+                TextColor="#FF7777"
+                HorizontalTextAlignment="Center" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

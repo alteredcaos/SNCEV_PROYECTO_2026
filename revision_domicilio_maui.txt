@@ -1,0 +1,1170 @@
+﻿===== src\SNCEV.Api\Controllers\DomiciliosController.cs =====
+using System.Security.Claims;
+using System.Text.Json;
+using Dapper;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
+using SNCEV.Api.Models;
+using SNCEV.Api.Services.Geografia;
+
+namespace SNCEV.Api.Controllers;
+
+[ApiController]
+[Route("v1/pacientes/{pacienteId:guid}/domicilios")]
+[Authorize]
+public sealed class DomiciliosController : ControllerBase
+{
+    private readonly IConfiguration _configuration;
+    private readonly IGeografiaService _geografia;
+
+    public DomiciliosController(
+        IConfiguration configuration,
+        IGeografiaService geografia)
+    {
+        _configuration = configuration;
+        _geografia = geografia;
+    }
+
+    [HttpPost]
+    [Authorize(Roles = "Administrador,Capturador")]
+    public async Task<IActionResult> Crear(
+        Guid pacienteId,
+        [FromBody] DomicilioPacienteRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 1. Validaciones básicas
+
+        if (request.Latitud == 0 && request.Longitud == 0)
+        {
+            return BadRequest(new
+            {
+                message = "Debe proporcionar coordenadas válidas del domicilio."
+            });
+        }
+
+        var origen = request.OrigenGeorreferencia
+            .Trim()
+            .ToUpperInvariant();
+
+        var precision = request.PrecisionGeorreferencia
+            .Trim()
+            .ToUpperInvariant();
+
+        if (origen is not ("MAPA" or "GPS" or "DIRECCION"))
+        {
+            return BadRequest(new
+            {
+                message = "OrigenGeorreferencia no válido."
+            });
+        }
+
+        if (precision is not ("EXACTA" or "APROXIMADA" or "MANUAL"))
+        {
+            return BadRequest(new
+            {
+                message = "PrecisionGeorreferencia no válida."
+            });
+        }
+
+        // 2. Resolver geografía en servidor.
+        // El frontend NO decide AGEB/CVEGEO/CLUES.
+
+        var geo = await _geografia.ResolverAsync(
+            request.Latitud,
+            request.Longitud,
+            5,
+            cancellationToken);
+
+        // La ausencia de polígono AGEB NO impide registrar el domicilio.
+        // Nunca se fabrican claves geográficas para suplir cobertura faltante.
+
+        // Por ahora elegimos la unidad candidata más cercana
+        // únicamente como SUGERENCIA, no como adscripción.
+
+        var cluesSugerida = geo.CluesCercanas
+            .OrderBy(x => x.DistanciaKm)
+            .FirstOrDefault();
+
+        var connectionString =
+            _configuration.GetConnectionString("SqlServerConnection");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "No se encontró la cadena de conexión configurada.");
+        }
+
+        await using var connection =
+            new SqlConnection(connectionString);
+
+        await connection.OpenAsync(cancellationToken);
+
+        await using var transaction =
+            (SqlTransaction)await connection.BeginTransactionAsync(
+                cancellationToken);
+
+        try
+        {
+            // 3. Confirmar que el paciente existe y está activo.
+
+            const string sqlPaciente = """
+SELECT COUNT(1)
+FROM sncev.paciente
+WHERE id = @PacienteId
+  AND eliminado = 0;
+""";
+
+            var existe = await connection.ExecuteScalarAsync<int>(
+                new CommandDefinition(
+                    sqlPaciente,
+                    new { PacienteId = pacienteId },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            if (existe == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+
+                return NotFound(new
+                {
+                    message =
+                        "No se encontró un paciente activo con ese identificador."
+                });
+            }
+            /////////////////////////////////////////////////////////////////////////////////7
+            /////////////////////////////////////////////////////////////////////////////////
+            const string sqlDomicilioActual = """
+SELECT TOP (1)
+    direccion_texto AS DireccionTexto,
+    latitud AS Latitud,
+    longitud AS Longitud,
+    localidad AS Localidad,
+    colonia AS Colonia,
+    codigo_postal AS CodigoPostal,
+    calle AS Calle,
+    numero_exterior AS NumeroExterior,
+    numero_interior AS NumeroInterior
+FROM sncev.domicilio_paciente
+WHERE paciente_id = @PacienteId
+  AND vigente = 1;
+""";
+
+            var actual = await connection.QuerySingleOrDefaultAsync<DomicilioActualSql>(
+                new CommandDefinition(
+                    sqlDomicilioActual,
+                    new { PacienteId = pacienteId },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            if (actual is not null)
+            {
+                var mismasCoordenadas =
+    actual.Latitud.HasValue &&
+    actual.Longitud.HasValue &&
+    Math.Abs(actual.Latitud.Value - (decimal)request.Latitud) < 0.000001m &&
+    Math.Abs(actual.Longitud.Value - (decimal)request.Longitud) < 0.000001m;
+
+                var mismosDatos =
+                    Iguales(actual.DireccionTexto, request.DireccionTexto) &&
+                    Iguales(actual.Localidad, request.Localidad) &&
+                    Iguales(actual.Colonia, request.Colonia) &&
+                    Iguales(actual.CodigoPostal, request.CodigoPostal) &&
+                    Iguales(actual.Calle, request.Calle) &&
+                    Iguales(actual.NumeroExterior, request.NumeroExterior) &&
+                    Iguales(actual.NumeroInterior, request.NumeroInterior);
+
+                if (mismasCoordenadas && mismosDatos)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+
+                    return Ok(new
+                    {
+                        message = "El domicilio proporcionado coincide con el domicilio vigente.",
+                        sinCambios = true
+                    });
+                }
+            }
+            ///////////////////////////////////////////////////////////////////////////////////////
+            //////////////////////////////////////////////////////////////////////////////////////
+            // 4. Obtener el ID interno del municipio determinado
+            //    por las coordenadas/AGEB.
+
+            const string sqlMunicipio = """
+SELECT TOP (1)
+    m.id
+FROM sncev_geo.municipio m
+WHERE m.clave_inegi = @ClaveInegi;
+""";
+
+            // Si el servicio sólo cubre AGEB de CDMX, entidad y municipio pueden
+            // no resolverse. Ambos campos deben admitir NULL en la tabla.
+            string? estadoClave = geo.Entidad?.Clave;
+            string? municipioClave = geo.Municipio?.Clave;
+            int? municipioId = null;
+
+            if (!string.IsNullOrWhiteSpace(estadoClave) &&
+                !string.IsNullOrWhiteSpace(municipioClave))
+            {
+                municipioId = await connection.QuerySingleOrDefaultAsync<int?>(
+                    new CommandDefinition(
+                        sqlMunicipio,
+                        new { ClaveInegi = estadoClave + municipioClave },
+                        transaction,
+                        cancellationToken: cancellationToken));
+            }
+
+            // Si no existe en el catálogo, se conserva NULL. El domicilio se
+            // registra con coordenadas y dirección; se enriquecerá después.
+
+            // 5. Cerrar domicilio actualmente vigente.
+
+            const string sqlCerrarAnterior = """
+UPDATE sncev.domicilio_paciente
+SET
+    vigente = 0,
+    fecha_fin = SYSDATETIME()
+WHERE paciente_id = @PacienteId
+  AND vigente = 1;
+""";
+
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    sqlCerrarAnterior,
+                    new { PacienteId = pacienteId },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            // 6. Insertar nuevo episodio residencial.
+
+            var domicilioId = Guid.NewGuid();
+
+            const string sqlInsertar = """
+INSERT INTO sncev.domicilio_paciente
+(
+    id,
+    paciente_id,
+    estado_clave,
+    municipio_id,
+    localidad_clave,
+    localidad,
+    colonia,
+    codigo_postal,
+    calle,
+    numero_exterior,
+    numero_interior,
+    manzana,
+    lote,
+    direccion_texto,
+    latitud,
+    longitud,
+    ageb_clave,
+    cvegeo,
+    cve_ageb,
+    clues_sugerida,
+    origen_georreferencia,
+    precision_georreferencia,
+    vigente,
+    fecha_inicio,
+    fecha_fin,
+    fecha_registro
+)
+VALUES
+(
+    @Id,
+    @PacienteId,
+    @EstadoClave,
+    @MunicipioId,
+    @LocalidadClave,
+    @Localidad,
+    @Colonia,
+    @CodigoPostal,
+    @Calle,
+    @NumeroExterior,
+    @NumeroInterior,
+    @Manzana,
+    @Lote,
+    @DireccionTexto,
+    @Latitud,
+    @Longitud,
+    @AgebClave,
+    @Cvegeo,
+    @CveAgeb,
+    @CluesSugerida,
+    @OrigenGeorreferencia,
+    @PrecisionGeorreferencia,
+    1,
+    SYSDATETIME(),
+    NULL,
+    SYSDATETIME()
+);
+""";
+
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    sqlInsertar,
+                  new
+                  {
+                      Id = domicilioId,
+                      PacienteId = pacienteId,
+
+                      // Calculados por coordenadas
+                      EstadoClave = estadoClave,
+                      MunicipioId = municipioId,
+
+                      // Capturados
+                      request.LocalidadClave,
+                      request.Localidad,
+                      request.Colonia,
+                      request.CodigoPostal,
+                      request.Calle,
+                      request.NumeroExterior,
+                      request.NumeroInterior,
+                      request.Manzana,
+                      request.Lote,
+                      request.DireccionTexto,
+
+                      request.Latitud,
+                      request.Longitud,
+
+                      // Calculados por coordenadas
+                      AgebClave = geo.Ageb?.Cvegeo,
+                      Cvegeo = geo.Ageb?.Cvegeo,
+                      CveAgeb = geo.Ageb?.CveAgeb,
+
+                      // Sólo sugerencia
+                      CluesSugerida = cluesSugerida?.Clues,
+
+                      OrigenGeorreferencia = origen,
+                      PrecisionGeorreferencia = precision
+                  },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            await transaction.CommitAsync(cancellationToken);
+
+            // 6. Respuesta
+
+            return Created(
+                $"/v1/pacientes/{pacienteId}/domicilios/{domicilioId}",
+                new
+                {
+                    id = domicilioId,
+                    pacienteId,
+
+                    domicilio = new
+                    {
+                        EstadoClave = estadoClave,
+                        MunicipioId = municipioId,
+                        request.LocalidadClave,
+                        request.Localidad,
+                        request.Colonia,
+                        request.CodigoPostal,
+                        request.Calle,
+                        request.NumeroExterior,
+                        request.NumeroInterior,
+                        request.Manzana,
+                        request.Lote,
+                        request.DireccionTexto,
+                        request.Latitud,
+                        request.Longitud
+                    },
+
+                    geografia = new
+                    {
+                        geo.Entidad,
+                        geo.Municipio,
+                        geo.Ageb
+                    },
+
+                    cluesSugerida,
+                    clasificacionGeograficaPendiente = geo.Ageb is null || municipioId is null,
+
+                    vigente = true
+                });
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    [HttpGet]
+    [Authorize(Roles = "Administrador,Capturador,Directivo,Auditor")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ObtenerHistorial(
+    Guid pacienteId,
+    CancellationToken cancellationToken)
+    {
+        var connectionString =
+            _configuration.GetConnectionString("SqlServerConnection");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "No se encontró la cadena de conexión configurada.");
+        }
+
+        await using var connection =
+            new SqlConnection(connectionString);
+
+        await connection.OpenAsync(cancellationToken);
+
+        // Comprobamos que el paciente exista.
+        // No exigimos eliminado = 0 porque Administrador/Auditor
+        // pueden necesitar consultar información histórica.
+
+        const string sqlPaciente = """
+SELECT COUNT(1)
+FROM sncev.paciente
+WHERE id = @PacienteId;
+""";
+
+        var existe = await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(
+                sqlPaciente,
+                new { PacienteId = pacienteId },
+                cancellationToken: cancellationToken));
+
+        if (existe == 0)
+        {
+            return NotFound(new
+            {
+                message = "No se encontró el paciente."
+            });
+        }
+
+        const string sql = """
+SELECT
+    d.id                            AS Id,
+    d.paciente_id                   AS PacienteId,
+
+    d.estado_clave                  AS EstadoClave,
+    e.nombre                        AS EstadoNombre,
+
+    d.municipio_id                  AS MunicipioId,
+    m.clave_inegi                   AS MunicipioClaveInegi,
+    m.nombre                        AS MunicipioNombre,
+
+    d.localidad_clave               AS LocalidadClave,
+    d.localidad                     AS Localidad,
+    d.colonia                       AS Colonia,
+    d.codigo_postal                 AS CodigoPostal,
+
+    d.calle                         AS Calle,
+    d.numero_exterior               AS NumeroExterior,
+    d.numero_interior               AS NumeroInterior,
+
+    d.manzana                       AS Manzana,
+    d.lote                          AS Lote,
+
+    d.direccion_texto               AS DireccionTexto,
+
+    CAST(d.latitud AS float)        AS Latitud,
+    CAST(d.longitud AS float)       AS Longitud,
+
+    d.ageb_clave                    AS AgebClave,
+    d.cvegeo                        AS Cvegeo,
+    d.cve_ageb                      AS CveAgeb,
+
+    d.clues_sugerida                AS CluesSugerida,
+    es.nombre_unidad                AS CluesSugeridaNombre,
+    es.nombre_institucion           AS CluesSugeridaInstitucion,
+
+    d.origen_georreferencia         AS OrigenGeorreferencia,
+    d.precision_georreferencia      AS PrecisionGeorreferencia,
+
+    d.vigente                       AS Vigente,
+    d.fecha_inicio                  AS FechaInicio,
+    d.fecha_fin                     AS FechaFin,
+    d.fecha_registro                AS FechaRegistro
+
+FROM sncev.domicilio_paciente d
+
+LEFT JOIN sncev_geo.estado e
+    ON e.clave_inegi = d.estado_clave
+
+LEFT JOIN sncev_geo.municipio m
+    ON m.id = d.municipio_id
+
+LEFT JOIN sncev_geo.establecimiento_salud es
+    ON es.clues = d.clues_sugerida
+
+WHERE d.paciente_id = @PacienteId
+
+ORDER BY
+    d.vigente DESC,
+    d.fecha_inicio DESC;
+""";
+
+        var domicilios =
+            (await connection.QueryAsync<DomicilioPacienteDto>(
+                new CommandDefinition(
+                    sql,
+                    new { PacienteId = pacienteId },
+                    cancellationToken: cancellationToken)))
+            .ToArray();
+
+        return Ok(new
+        {
+            pacienteId,
+            total = domicilios.Length,
+            domicilioVigente = domicilios.FirstOrDefault(x => x.Vigente),
+            historial = domicilios
+        });
+    }
+    [HttpGet("vigente")]
+    [Authorize(Roles = "Administrador,Capturador,Directivo,Auditor")]
+    [ProducesResponseType(typeof(DomicilioPacienteDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ObtenerVigente(
+    Guid pacienteId,
+    CancellationToken cancellationToken)
+    {
+        var connectionString =
+            _configuration.GetConnectionString("SqlServerConnection");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "No se encontró la cadena de conexión configurada.");
+        }
+
+        await using var connection =
+            new SqlConnection(connectionString);
+
+        await connection.OpenAsync(cancellationToken);
+
+        const string sql = """
+SELECT TOP (1)
+    d.id                            AS Id,
+    d.paciente_id                   AS PacienteId,
+
+    d.estado_clave                  AS EstadoClave,
+    e.nombre                        AS EstadoNombre,
+
+    d.municipio_id                  AS MunicipioId,
+    m.clave_inegi                   AS MunicipioClaveInegi,
+    m.nombre                        AS MunicipioNombre,
+
+    d.localidad_clave               AS LocalidadClave,
+    d.localidad                     AS Localidad,
+    d.colonia                       AS Colonia,
+    d.codigo_postal                 AS CodigoPostal,
+
+    d.calle                         AS Calle,
+    d.numero_exterior               AS NumeroExterior,
+    d.numero_interior               AS NumeroInterior,
+
+    d.manzana                       AS Manzana,
+    d.lote                          AS Lote,
+
+    d.direccion_texto               AS DireccionTexto,
+
+    CAST(d.latitud AS float)        AS Latitud,
+    CAST(d.longitud AS float)       AS Longitud,
+
+    d.ageb_clave                    AS AgebClave,
+    d.cvegeo                        AS Cvegeo,
+    d.cve_ageb                      AS CveAgeb,
+
+    d.clues_sugerida                AS CluesSugerida,
+    es.nombre_unidad                AS CluesSugeridaNombre,
+    es.nombre_institucion           AS CluesSugeridaInstitucion,
+
+    d.origen_georreferencia         AS OrigenGeorreferencia,
+    d.precision_georreferencia      AS PrecisionGeorreferencia,
+
+    d.vigente                       AS Vigente,
+    d.fecha_inicio                  AS FechaInicio,
+    d.fecha_fin                     AS FechaFin,
+    d.fecha_registro                AS FechaRegistro
+
+FROM sncev.domicilio_paciente d
+
+LEFT JOIN sncev_geo.estado e
+    ON e.clave_inegi = d.estado_clave
+
+LEFT JOIN sncev_geo.municipio m
+    ON m.id = d.municipio_id
+
+LEFT JOIN sncev_geo.establecimiento_salud es
+    ON es.clues = d.clues_sugerida
+
+WHERE d.paciente_id = @PacienteId
+  AND d.vigente = 1
+
+ORDER BY d.fecha_inicio DESC;
+""";
+
+        var domicilio =
+            await connection.QuerySingleOrDefaultAsync<DomicilioPacienteDto>(
+                new CommandDefinition(
+                    sql,
+                    new { PacienteId = pacienteId },
+                    cancellationToken: cancellationToken));
+
+        if (domicilio is null)
+        {
+            return NotFound(new
+            {
+                message = "El paciente no tiene un domicilio vigente registrado."
+            });
+        }
+
+        return Ok(domicilio);
+    }
+    private static bool Iguales(string? a, string? b)
+    {
+        return string.Equals(
+            a?.Trim(),
+            b?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class DomicilioActualSql
+    {
+        public string? DireccionTexto { get; init; }
+        public decimal? Latitud { get; init; }
+        public decimal? Longitud { get; init; }
+
+        public string? Localidad { get; init; }
+        public string? Colonia { get; init; }
+        public string? CodigoPostal { get; init; }
+        public string? Calle { get; init; }
+        public string? NumeroExterior { get; init; }
+        public string? NumeroInterior { get; init; }
+    }
+}
+
+===== src\SNCEV.Api\Models\DomicilioPacienteDto.cs =====
+namespace SNCEV.Api.Models;
+
+public sealed class DomicilioPacienteDto
+{
+    public Guid Id { get; init; }
+    public Guid PacienteId { get; init; }
+
+    public string? EstadoClave { get; init; }
+    public string? EstadoNombre { get; init; }
+
+    public int? MunicipioId { get; init; }
+    public string? MunicipioClaveInegi { get; init; }
+    public string? MunicipioNombre { get; init; }
+
+    public string? LocalidadClave { get; init; }
+    public string? Localidad { get; init; }
+    public string? Colonia { get; init; }
+    public string? CodigoPostal { get; init; }
+
+    public string? Calle { get; init; }
+    public string? NumeroExterior { get; init; }
+    public string? NumeroInterior { get; init; }
+
+    public string? Manzana { get; init; }
+    public string? Lote { get; init; }
+
+    public string? DireccionTexto { get; init; }
+
+    public double? Latitud { get; init; }
+    public double? Longitud { get; init; }
+
+    public string? AgebClave { get; init; }
+    public string? Cvegeo { get; init; }
+    public string? CveAgeb { get; init; }
+
+    public string? CluesSugerida { get; init; }
+    public string? CluesSugeridaNombre { get; init; }
+    public string? CluesSugeridaInstitucion { get; init; }
+
+    public string? OrigenGeorreferencia { get; init; }
+    public string? PrecisionGeorreferencia { get; init; }
+
+    public bool Vigente { get; init; }
+
+    public DateTime FechaInicio { get; init; }
+    public DateTime? FechaFin { get; init; }
+    public DateTime FechaRegistro { get; init; }
+}
+
+===== src\SNCEV.Api\Models\DomicilioPacienteRequest.cs =====
+using System.ComponentModel.DataAnnotations;
+
+namespace SNCEV.Api.Models;
+
+public sealed class DomicilioPacienteRequest
+{
+    [StringLength(2)]
+    public string? EstadoClave { get; init; }
+
+    public int? MunicipioId { get; init; }
+
+    [StringLength(10)]
+    public string? LocalidadClave { get; init; }
+
+    [StringLength(150)]
+    public string? Localidad { get; init; }
+
+    [StringLength(150)]
+    public string? Colonia { get; init; }
+
+    [StringLength(10)]
+    public string? CodigoPostal { get; init; }
+
+    [StringLength(200)]
+    public string? Calle { get; init; }
+
+    [StringLength(30)]
+    public string? NumeroExterior { get; init; }
+
+    [StringLength(30)]
+    public string? NumeroInterior { get; init; }
+
+    [StringLength(30)]
+    public string? Manzana { get; init; }
+
+    [StringLength(30)]
+    public string? Lote { get; init; }
+
+    [StringLength(500)]
+    public string? DireccionTexto { get; init; }
+
+    [Range(-90, 90)]
+    public double Latitud { get; init; }
+
+    [Range(-180, 180)]
+    public double Longitud { get; init; }
+
+    [StringLength(30)]
+    public string OrigenGeorreferencia { get; init; } = "MAPA";
+
+    [StringLength(30)]
+    public string PrecisionGeorreferencia { get; init; } = "MANUAL";
+}
+
+===== src\SNCEV.MobileApp\Views\PacienteDetallePage.xaml =====
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="SNCEV.MobileApp.Views.PacienteDetallePage"
+             Title="Expediente nominal"
+             BackgroundColor="#101820">
+    <Grid RowDefinitions="Auto,*">
+        <ActivityIndicator x:Name="IndicadorCarga" Grid.Row="0"
+                           Color="#64B5F6" IsRunning="False" IsVisible="False" />
+        <ScrollView Grid.Row="1">
+            <VerticalStackLayout Padding="18" Spacing="16">
+                <Label Text="Expediente del paciente" FontSize="25"
+                       FontAttributes="Bold" TextColor="#64B5F6" />
+                <Label x:Name="LblEstado" IsVisible="False" TextColor="#FFCC80" />
+
+                <Border BackgroundColor="#253545" Stroke="#425569" Padding="16">
+                    <VerticalStackLayout Spacing="8">
+                        <Label Text="DATOS PERSONALES" FontAttributes="Bold" TextColor="#64B5F6" />
+                        <Label x:Name="LblNombre" FontSize="22" FontAttributes="Bold" TextColor="White" />
+                        <Label x:Name="LblCurp" FontSize="15" TextColor="#CCCCCC" LineBreakMode="WordWrap" />
+                        <Label x:Name="LblNacimiento" TextColor="White" />
+                        <Label x:Name="LblEdad" TextColor="White" />
+                        <Label x:Name="LblSexo" TextColor="White" />
+                        <Label x:Name="LblEntidadNacimiento" TextColor="White" />
+                        <Label x:Name="LblTipoCartilla" FontAttributes="Bold" TextColor="#81C784" />
+                    </VerticalStackLayout>
+                </Border>
+
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                    <Button x:Name="BtnExpediente" Grid.Column="0" Text="Expediente"
+                            Clicked="OnExpedienteClicked" BackgroundColor="#1976D2" TextColor="White" />
+                    <Button x:Name="BtnEsquema" Grid.Column="1" Text="Esquema"
+                            Clicked="OnEsquemaClicked" BackgroundColor="#37474F" TextColor="White" />
+                </Grid>
+
+                <VerticalStackLayout x:Name="PanelExpediente" IsVisible="False" Spacing="14">
+                    <Label Text="Residencia y cartilla" FontSize="20" FontAttributes="Bold" TextColor="White" />
+                    <Border BackgroundColor="#253545" Stroke="#425569" Padding="15">
+                        <VerticalStackLayout Spacing="9">
+                            <Label Text="DOMICILIO VIGENTE" FontAttributes="Bold" TextColor="#64B5F6" />
+                            <Label x:Name="LblDomicilioEstado" TextColor="#FFCC80" />
+                            <Label x:Name="LblEstadoResidencia" TextColor="White" />
+                            <Label x:Name="LblMunicipio" TextColor="White" />
+                            <Label x:Name="LblLocalidad" TextColor="White" />
+                            <Label x:Name="LblColonia" TextColor="White" />
+                            <Label x:Name="LblCodigoPostal" TextColor="White" />
+                            <Label x:Name="LblDireccion" TextColor="White" />
+                            <Label x:Name="LblReferencia" TextColor="White" />
+                            <Label x:Name="LblAgeb" TextColor="White" />
+                            <Label x:Name="LblCvegeo" TextColor="White" />
+                            <Label x:Name="LblCoordenadas" TextColor="White" />
+                            <Label x:Name="LblUnidadCercana" TextColor="White" />
+                            <Button x:Name="BtnUbicacion" Text="Ver ubicaciÃ³n del domicilio"
+                                    IsEnabled="False" BackgroundColor="#1976D2" TextColor="White" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Label x:Name="LblTotalVacunas" Text="Historial de vacunaciÃ³n"
+                           FontSize="20" FontAttributes="Bold" TextColor="#81C784" />
+                    <VerticalStackLayout x:Name="ListaVacunas" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Stroke="#425569" Padding="14">
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding VacunaNombre}" FontSize="17"
+                                               FontAttributes="Bold" TextColor="White" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#CCCCCC" />
+                                        <Label Text="{Binding EstadoTexto}" TextColor="#FFCC80" />
+                                        <Label Text="{Binding Observaciones}" FontSize="12" TextColor="#BBBBBB" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinVacunas" Text="Sin aplicaciones registradas."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label Text="SomatometrÃ­a" FontSize="20" FontAttributes="Bold" TextColor="White" />
+                    <Label x:Name="LblSomatometria" TextColor="#CCCCCC" />
+                    <Button Text="Registrar aplicaciÃ³n" IsEnabled="False"
+                            BackgroundColor="#287A36" TextColor="White" />
+                </VerticalStackLayout>
+
+                <VerticalStackLayout x:Name="PanelEsquema" IsVisible="False" Spacing="14">
+                    <Label Text="EvaluaciÃ³n del esquema" FontSize="21"
+                           FontAttributes="Bold" TextColor="#64B5F6" />
+                    <Label x:Name="LblFechaEvaluacion" TextColor="#CCCCCC" />
+                    <Grid ColumnDefinitions="*,*,*" ColumnSpacing="7">
+                        <Border Grid.Column="0" BackgroundColor="#234934" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroAplicadas" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Aplicadas" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                        <Border Grid.Column="1" BackgroundColor="#23465C" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroAplicables" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Aplicables" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                        <Border Grid.Column="2" BackgroundColor="#66502D" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroProgramadas" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Programadas" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                    </Grid>
+                    <Label Text="Dosis aplicables" FontSize="20" FontAttributes="Bold" TextColor="#81C784" />
+                    <VerticalStackLayout x:Name="ListaAplicables" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Padding="14">
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding Vacuna}" TextColor="White" FontAttributes="Bold" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#81C784" />
+                                        <Label Text="{Binding Motivo}" TextColor="#CCCCCC" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinAplicables" Text="No hay dosis clasificadas como aplicables."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label Text="Dosis programadas" FontSize="20" FontAttributes="Bold" TextColor="#FFCC80" />
+                    <VerticalStackLayout x:Name="ListaProgramadas" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Stroke="#425569" Padding="14">
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding Vacuna}" TextColor="White" FontSize="17" FontAttributes="Bold" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#FFCC80" />
+                                        <Label Text="{Binding FechaTexto}" TextColor="#CCCCCC" />
+                                        <Label Text="{Binding Motivo}" TextColor="White" />
+                                        <Label Text="{Binding Observaciones}" FontSize="12" TextColor="#BBBBBB" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinProgramadas" Text="No hay dosis programadas."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label x:Name="LblAdvertencias" IsVisible="False" TextColor="#FFCC80" />
+                    <Label Text="Las fechas y estados son resultados del motor de reglas. Toda aplicaciÃ³n requiere validaciÃ³n clÃ­nica."
+                           FontSize="12" TextColor="#CCCCCC" />
+                </VerticalStackLayout>
+
+                <Button x:Name="BtnActualizar" Text="Actualizar informaciÃ³n"
+                        Clicked="OnActualizarClicked" BackgroundColor="#37474F" TextColor="White" />
+            </VerticalStackLayout>
+        </ScrollView>
+    </Grid>
+</ContentPage>
+
+===== src\SNCEV.MobileApp\Views\PacienteDetallePage.xaml.cs =====
+using System.Net.Http;
+using System.Text.Json;
+using SNCEV.MobileApp.Models.Expediente;
+using SNCEV.MobileApp.Models.Vacunacion;
+using SNCEV.MobileApp.Services;
+
+namespace SNCEV.MobileApp.Views;
+
+public partial class PacienteDetallePage : ContentPage
+{
+    private readonly Guid _pacienteId;
+    private readonly HttpClient _httpClient;
+    private readonly ExpedienteService _expedienteService;
+    private readonly EsquemaVacunacionService _esquemaService;
+    private bool _cargando;
+    private bool _expedienteCargado;
+    private bool _esquemaCargado;
+    private string _pestanaActual = "expediente";
+
+    // Conserva la firma que MainPage ya utiliza.
+    public PacienteDetallePage(Guid pacienteId, PacientesService pacientesService)
+    {
+        InitializeComponent();
+        _pacienteId = pacienteId;
+        _ = pacientesService; // Compatibilidad; el expediente usa su endpoint ampliado.
+        _httpClient = new HttpClient
+        {
+            BaseAddress = new Uri(ApiSettings.BaseUrl),
+            Timeout = TimeSpan.FromSeconds(20)
+        };
+        _expedienteService = new ExpedienteService(_httpClient);
+        _esquemaService = new EsquemaVacunacionService(_httpClient);
+        MostrarPestana("expediente");
+    }
+
+    protected override async void OnAppearing()
+    {
+        base.OnAppearing();
+        if (!_expedienteCargado)
+            await CargarExpedienteAsync();
+    }
+
+    private void MostrarPestana(string pestana)
+    {
+        _pestanaActual = pestana;
+        PanelExpediente.IsVisible = pestana == "expediente" && _expedienteCargado;
+        PanelEsquema.IsVisible = pestana == "esquema" && _esquemaCargado;
+        BtnExpediente.BackgroundColor = Color.FromArgb(pestana == "expediente" ? "#1976D2" : "#37474F");
+        BtnEsquema.BackgroundColor = Color.FromArgb(pestana == "esquema" ? "#1976D2" : "#37474F");
+    }
+
+    private void MostrarEstado(string mensaje)
+    {
+        LblEstado.Text = mensaje;
+        LblEstado.IsVisible = !string.IsNullOrWhiteSpace(mensaje);
+    }
+
+    private static string Valor(string? texto) =>
+        string.IsNullOrWhiteSpace(texto) ? "No registrado" : texto;
+
+    private static string EdadTexto(DateTime nacimiento)
+    {
+        var hoy = DateTime.Today;
+        var fecha = nacimiento.Date;
+        if (fecha > hoy) return "Fecha de nacimiento por verificar";
+        int anios = hoy.Year - fecha.Year;
+        if (fecha > hoy.AddYears(-anios)) anios--;
+        var aniversario = fecha.AddYears(anios);
+        int meses = 0;
+        while (meses < 11 && aniversario.AddMonths(meses + 1) <= hoy) meses++;
+        int dias = (hoy - aniversario.AddMonths(meses)).Days;
+        return $"{anios} aÃ±os, {meses} meses, {dias} dÃ­as";
+    }
+
+    // El contrato exacto de domicilioVigente aÃºn no se ha compartido.
+    // Se leen sÃ³lo claves reconocibles; no se geocodifica ni se infieren coordenadas.
+    private static string? Campo(JsonElement? domicilio, params string[] claves)
+    {
+        if (domicilio is not { ValueKind: JsonValueKind.Object } objeto)
+            return null;
+        foreach (var clave in claves)
+        {
+            foreach (var propiedad in objeto.EnumerateObject())
+            {
+                if (!string.Equals(propiedad.Name, clave, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (propiedad.Value.ValueKind == JsonValueKind.String)
+                    return propiedad.Value.GetString();
+                if (propiedad.Value.ValueKind == JsonValueKind.Number)
+                    return propiedad.Value.ToString();
+            }
+        }
+        return null;
+    }
+
+    private async Task CargarExpedienteAsync()
+    {
+        if (_cargando) return;
+        _cargando = true;
+        IndicadorCarga.IsVisible = IndicadorCarga.IsRunning = true;
+        BtnActualizar.IsEnabled = BtnExpediente.IsEnabled = BtnEsquema.IsEnabled = false;
+        try
+        {
+            MostrarEstado("");
+            ExpedientePacienteResponse expediente =
+                await _expedienteService.ObtenerAsync(_pacienteId);
+            var paciente = expediente.Paciente;
+            if (paciente is null)
+                throw new JsonException("El expediente no contiene paciente.");
+
+            LblNombre.Text = paciente.NombreCompleto;
+            var curp = paciente.Curp ?? "";
+
+            LblCurp.Text = string.IsNullOrWhiteSpace(paciente.Curp)
+                ? "CURP: No registrada"
+                : $"CURP: {paciente.Curp.Trim().ToUpperInvariant()}";
+
+            LblNacimiento.Text = "Nacimiento: " + paciente.FechaNacimientoTexto;
+            var hoy = DateTime.Today;
+            var nacimiento = paciente.FechaNacimiento.Date;
+
+            int edad = hoy.Year - nacimiento.Year;
+
+            if (nacimiento > hoy.AddYears(-edad))
+                edad--;
+
+            LblEdad.Text = $"Edad: {edad} aÃ±os";
+
+            LblEntidadNacimiento.Text =
+                "Entidad de nacimiento: " +
+                (paciente.EntidadNacimiento ?? "No registrada");
+            LblEdad.Text = "Edad: " + EdadTexto(paciente.FechaNacimiento);
+            LblSexo.Text = "Sexo: " + (paciente.Sexo switch
+            {
+                "M" or "H" => "Masculino",
+                "F" => "Femenino",
+                _ => Valor(paciente.Sexo)
+            });
+            LblEntidadNacimiento.Text = "Entidad de nacimiento: " + Valor(paciente.EntidadNacimiento);
+            LblTipoCartilla.Text = "Cartilla: " + Valor(paciente.TipoCartilla);
+
+            var domicilio = expediente.DomicilioVigente;
+            bool tieneDomicilio = domicilio is { ValueKind: JsonValueKind.Object };
+            LblDomicilioEstado.Text = tieneDomicilio
+                ? "Domicilio vigente estructurado disponible"
+                : "Sin domicilio vigente estructurado; se muestran datos del registro nominal";
+            LblEstadoResidencia.Text = "Estado: " + Valor(
+                Campo(domicilio, "estado", "estado_nombre", "estado_residencia") ?? paciente.EstadoResidencia);
+            LblMunicipio.Text = "Municipio / AlcaldÃ­a: " + Valor(
+                Campo(domicilio, "municipio", "municipio_nombre", "alcaldia") ?? paciente.MunicipioResidencia);
+            LblLocalidad.Text = "Localidad: " + Valor(
+                Campo(domicilio, "localidad", "localidad_nombre") ?? paciente.Localidad);
+            LblColonia.Text = "Colonia: " + Valor(Campo(domicilio, "colonia", "colonia_nombre"));
+            LblCodigoPostal.Text = "CÃ³digo postal: " + Valor(Campo(domicilio, "codigo_postal", "codigoPostal", "cp"));
+            LblDireccion.Text = "DirecciÃ³n: " + Valor(
+                Campo(domicilio, "direccion", "calle_numero", "domicilio") ?? paciente.Direccion);
+            LblReferencia.Text = "Referencia: " + Valor(Campo(domicilio, "referencia", "referencias"));
+            LblAgeb.Text = "AGEB: " + Valor(
+                Campo(domicilio, "ageb", "ageb_clave") ?? paciente.AgebClave);
+            LblCvegeo.Text = "CVEGEO: " + Valor(Campo(domicilio, "cvegeo", "cve_geo"));
+            var lat = Campo(domicilio, "latitud", "lat");
+            var lon = Campo(domicilio, "longitud", "lon", "lng");
+            LblCoordenadas.Text = "Coordenadas: " +
+                (lat is not null && lon is not null ? $"{lat}, {lon}" : "No registradas");
+            LblUnidadCercana.Text = "Unidad cercana: " + Valor(
+                Campo(domicilio, "unidad_cercana", "unidadCercana", "clues_sugerida"));
+            // Sin mapa hasta validar el contrato de coordenadas y permisos.
+            BtnUbicacion.IsEnabled = false;
+
+            var vacunas = expediente.VacunasAplicadas ?? new();
+            BindableLayout.SetItemsSource(ListaVacunas, vacunas);
+            LblTotalVacunas.Text = $"Historial de vacunaciÃ³n ({vacunas.Count})";
+            LblSinVacunas.IsVisible = vacunas.Count == 0;
+            int mediciones = expediente.Somatometria?.Count ?? 0;
+            LblSomatometria.Text = mediciones == 0
+                ? "Sin mediciones registradas."
+                : $"{mediciones} mediciÃ³n(es) registrada(s); detalle pendiente de integrar.";
+
+            _expedienteCargado = true;
+            MostrarPestana(_pestanaActual);
+        }
+        catch (Exception ex)
+        {
+            _expedienteCargado = false;
+            PanelExpediente.IsVisible = false;
+            MostrarEstado(DescribirError(ex));
+        }
+        finally
+        {
+            IndicadorCarga.IsVisible = IndicadorCarga.IsRunning = false;
+            BtnActualizar.IsEnabled = BtnExpediente.IsEnabled = BtnEsquema.IsEnabled = true;
+            _cargando = false;
+        }
+    }
+
+    private async Task CargarEsquemaAsync()
+    {
+        if (_cargando) return;
+        _cargando = true;
+        IndicadorCarga.IsVisible = IndicadorCarga.IsRunning = true;
+        BtnActualizar.IsEnabled = BtnExpediente.IsEnabled = BtnEsquema.IsEnabled = false;
+        try
+        {
+            MostrarEstado("");
+            EsquemaVacunacionResponse esquema = await _esquemaService.ObtenerAsync(_pacienteId);
+            LblFechaEvaluacion.Text = "EvaluaciÃ³n: " + esquema.FechaEvaluacion.ToString("dd/MM/yyyy HH:mm");
+            LblNumeroAplicadas.Text = esquema.Aplicadas.Count.ToString();
+            LblNumeroAplicables.Text = esquema.Aplicables.Count.ToString();
+            LblNumeroProgramadas.Text = esquema.Programadas.Count.ToString();
+            BindableLayout.SetItemsSource(ListaAplicables, esquema.Aplicables);
+            BindableLayout.SetItemsSource(ListaProgramadas, esquema.Programadas);
+            LblSinAplicables.IsVisible = esquema.Aplicables.Count == 0;
+            LblSinProgramadas.IsVisible = esquema.Programadas.Count == 0;
+            var avisos = new List<string>();
+            if (esquema.RequierenVerificacion.Count > 0)
+                avisos.Add($"{esquema.RequierenVerificacion.Count} regla(s) requieren verificaciÃ³n.");
+            int advertencias = esquema.Programadas.Count(x =>
+                x.ReglaMarcadaParaVerificacion ||
+                (x.Motivo?.Contains("verificaciÃ³n", StringComparison.OrdinalIgnoreCase) ?? false));
+            if (advertencias > 0)
+                avisos.Add($"{advertencias} dosis programada(s) tienen advertencias de verificaciÃ³n.");
+            LblAdvertencias.Text = string.Join("\n", avisos);
+            LblAdvertencias.IsVisible = avisos.Count > 0;
+            _esquemaCargado = true;
+            MostrarPestana(_pestanaActual);
+        }
+        catch (Exception ex)
+        {
+            _esquemaCargado = false;
+            PanelEsquema.IsVisible = false;
+            MostrarEstado(DescribirError(ex));
+        }
+        finally
+        {
+            IndicadorCarga.IsVisible = IndicadorCarga.IsRunning = false;
+            BtnActualizar.IsEnabled = BtnExpediente.IsEnabled = BtnEsquema.IsEnabled = true;
+            _cargando = false;
+        }
+    }
+
+    private async void OnExpedienteClicked(object sender, EventArgs e)
+    {
+        MostrarPestana("expediente");
+        if (!_expedienteCargado) await CargarExpedienteAsync();
+    }
+
+    private async void OnEsquemaClicked(object sender, EventArgs e)
+    {
+        MostrarPestana("esquema");
+        if (!_esquemaCargado) await CargarEsquemaAsync();
+    }
+
+    private async void OnActualizarClicked(object sender, EventArgs e)
+    {
+        if (_cargando) return;
+        if (_pestanaActual == "expediente") await CargarExpedienteAsync();
+        else await CargarEsquemaAsync();
+    }
+
+    private static string DescribirError(Exception ex) => ex switch
+    {
+        UnauthorizedAccessException => "SesiÃ³n expirada. Inicia sesiÃ³n nuevamente.",
+        InvalidOperationException => "No tienes permisos para consultar estos datos.",
+        HttpRequestException => "No fue posible conectar con SNCEV.Api.",
+        TaskCanceledException => "La consulta excediÃ³ el tiempo de espera.",
+        JsonException => "La respuesta de la API no tiene el formato esperado.",
+        _ => "OcurriÃ³ un error al consultar la informaciÃ³n."
+    };
+}
+

@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    x:Class="SNCEV.MobileApp.Views.EsquemaVacunacionPage"
+    Title="Esquema de vacunación"
+    BackgroundColor="#101820">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="18">
+
+            <Label
+                Text="Esquema de vacunación"
+                FontSize="25"
+                FontAttributes="Bold"
+                TextColor="#64B5F6" />
+
+            <Label
+                x:Name="LblPaciente"
+                TextColor="White"
+                FontSize="17" />
+
+            <Label
+                x:Name="LblEvaluacion"
+                TextColor="#CCCCCC" />
+
+            <ActivityIndicator
+                x:Name="Indicador"
+                Color="#64B5F6"
+                IsRunning="True"
+                IsVisible="True" />
+
+            <Label
+                x:Name="LblEstado"
+                TextColor="#FFCC80" />
+
+            <VerticalStackLayout
+                x:Name="PanelDatos"
+                IsVisible="False"
+                Spacing="16">
+
+                <Label
+                    x:Name="LblAplicadas"
+                    FontSize="21"
+                    FontAttributes="Bold"
+                    TextColor="#81C784" />
+
+                <CollectionView
+                    x:Name="CvAplicadas"
+                    SelectionMode="None"
+                    HeightRequest="180">
+
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Border
+                                BackgroundColor="#253545"
+                                Padding="14"
+                                Margin="0,4">
+
+                                <VerticalStackLayout Spacing="5">
+                                    <Label
+                                        Text="{Binding Vacuna}"
+                                        TextColor="White"
+                                        FontAttributes="Bold" />
+
+                                    <Label
+                                        Text="{Binding Descripcion}"
+                                        TextColor="#CCCCCC" />
+
+                                    <Label
+                                        Text="{Binding DatosAplicacion}"
+                                        TextColor="#CCCCCC"
+                                        FontSize="12" />
+                                </VerticalStackLayout>
+                            </Border>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+
+                <Label
+                    x:Name="LblAplicables"
+                    FontSize="21"
+                    FontAttributes="Bold"
+                    TextColor="#64B5F6" />
+
+                <CollectionView
+                    x:Name="CvAplicables"
+                    SelectionMode="None"
+                    HeightRequest="160">
+
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Border
+                                BackgroundColor="#253545"
+                                Padding="14"
+                                Margin="0,4">
+
+                                <VerticalStackLayout Spacing="5">
+                                    <Label
+                                        Text="{Binding Vacuna}"
+                                        TextColor="White"
+                                        FontAttributes="Bold" />
+
+                                    <Label
+                                        Text="{Binding Descripcion}"
+                                        TextColor="#CCCCCC" />
+
+                                    <Label
+                                        Text="{Binding Motivo}"
+                                        TextColor="#FFCC80" />
+                                </VerticalStackLayout>
+                            </Border>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+
+                <Label
+                    x:Name="LblProgramadas"
+                    FontSize="21"
+                    FontAttributes="Bold"
+                    TextColor="#FFCC80" />
+
+                <CollectionView
+                    x:Name="CvProgramadas"
+                    SelectionMode="None"
+                    HeightRequest="350">
+
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Border
+                                BackgroundColor="#253545"
+                                Padding="14"
+                                Margin="0,4">
+
+                                <VerticalStackLayout Spacing="6">
+                                    <Label
+                                        Text="{Binding Vacuna}"
+                                        TextColor="White"
+                                        FontAttributes="Bold" />
+
+                                    <Label
+                                        Text="{Binding Descripcion}"
+                                        TextColor="#FFCC80" />
+
+                                    <Label
+                                        Text="{Binding FechaTexto}"
+                                        TextColor="#CCCCCC" />
+
+                                    <Label
+                                        Text="{Binding Motivo}"
+                                        TextColor="White" />
+
+                                    <Label
+                                        Text="{Binding Observaciones}"
+                                        TextColor="#BBBBBB"
+                                        FontSize="12" />
+                                </VerticalStackLayout>
+                            </Border>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+
+                <Label
+                    Text="Las fechas y estados provienen de SNCEV.Api. Toda aplicación requiere validación clínica."
+                    FontSize="12"
+                    TextColor="#CCCCCC" />
+
+            </VerticalStackLayout>
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

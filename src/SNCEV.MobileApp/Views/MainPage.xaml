@@ -1,0 +1,140 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:SNCEV.MobileApp.ViewModels"
+             x:Class="SNCEV.MobileApp.Views.MainPage"
+             Title="Sistema Nacional Cartilla Electrónica">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="15">
+            <Label Text="Cartilla Electrónica de Vacunación (SNCEV)"
+                   FontSize="22" FontAttributes="Bold" HorizontalOptions="Center" TextColor="#0D47A1" />
+
+            <!-- Tabs / Modos de App -->
+            <Grid ColumnDefinitions="*, *" ColumnSpacing="10">
+                <Button Grid.Column="0" Text="App 1: Captura Clínica" BackgroundColor="#1565C0" TextColor="White" Clicked="OnApp1Clicked"/>
+                <Button Grid.Column="1" Text="App 2: Dashboard Coberturas" BackgroundColor="#2E7D32" TextColor="White" Clicked="OnApp2Clicked"/>
+            </Grid>
+
+            <!-- Sección Estado Sincronización -->
+            <Frame BorderColor="#B0BEC5" CornerRadius="10" Padding="15" HasShadow="True">
+                <HorizontalStackLayout Spacing="10">
+                    <Label Text="⚡ Sincronización Offline:" FontAttributes="Bold"/>
+                    <Label x:Name="LblSyncStatus" Text="En línea (SQLite Activo)" TextColor="#2E7D32"/>
+                </HorizontalStackLayout>
+            </Frame>
+            <Button
+    Text="Diagnóstico CLUES (SQLite)"
+    BackgroundColor="#1769AA"
+    TextColor="White"
+    Clicked="AbrirDiagnosticoCluesClicked" />
+            <!-- Búsqueda Rápidas -->
+            <Entry
+    x:Name="TxtBuscar"
+    Placeholder="Buscar por CURP o nombre"
+    TextChanged="OnBuscarTextChanged" />
+
+            <Button
+    Text="Buscar paciente"
+    BackgroundColor="#1673C9"
+    TextColor="White"
+    Clicked="OnBuscarPacienteClicked" />
+
+            <Button
+    Text="Escanear CURP con cámara"
+    BackgroundColor="#1673C9"
+    TextColor="White"
+    Clicked="OnEscanearCurpClicked" />
+
+            <VerticalStackLayout
+    x:Name="PanelResultados"
+    IsVisible="False"
+    Spacing="12"
+    Margin="0,15,0,15">
+
+                <Label
+        x:Name="LblTotalPacientes"
+        Text="Pacientes encontrados"
+        FontSize="20"
+        FontAttributes="Bold"
+        TextColor="White" />
+
+                <CollectionView
+        x:Name="CvPacientes"
+        SelectionMode="Single"
+        SelectionChanged="OnPacienteSeleccionado"
+        HeightRequest="260">
+
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Border
+                    Stroke="#444444"
+                    StrokeThickness="1"
+                    BackgroundColor="#253545"
+                    Padding="15"
+                    Margin="0,5">
+
+                                <VerticalStackLayout Spacing="7">
+
+                                    <Label
+                            Text="{Binding NombreCompleto}"
+                            FontSize="18"
+                            FontAttributes="Bold"
+                            TextColor="White" />
+
+                                    <Label
+                            Text="{Binding CurpCompleta}"
+                            FontSize="13"
+                            TextColor="#CCCCCC" />
+
+                                    <HorizontalStackLayout Spacing="8">
+                                        <Label Text="Sexo:" TextColor="#CCCCCC" />
+                                        <Label Text="{Binding SexoTexto}" TextColor="White" />
+                                    </HorizontalStackLayout>
+
+                                    <HorizontalStackLayout Spacing="8">
+                                        <Label
+                                Text="Nacimiento:"
+                                TextColor="#CCCCCC" />
+
+                                        <Label
+                                Text="{Binding FechaNacimientoTexto}"
+                                TextColor="White" />
+                                    </HorizontalStackLayout>
+
+                                    <Label
+                            Text="Tocar para seleccionar expediente"
+                            FontSize="12"
+                            TextColor="#64B5F6" />
+
+                                </VerticalStackLayout>
+                            </Border>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+
+                </CollectionView>
+            </VerticalStackLayout>
+
+            <!-- Listado Kpis / Pacientes -->
+            <Label Text="Vacunas / Cobertura Prioritaria" FontSize="18" FontAttributes="Bold" Margin="0,10,0,0"/>
+
+            <CollectionView x:Name="CvKpis">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <Frame Margin="0,5" Padding="12" CornerRadius="8" HasShadow="True">
+                            <Grid ColumnDefinitions="*, Auto">
+                                <VerticalStackLayout Grid.Column="0">
+                                    <Label Text="{Binding Titulo}" FontAttributes="Bold" FontSize="16"/>
+                                    <Label Text="{Binding Porcentaje, StringFormat='Cobertura: {0:F1}%'}" TextColor="#555"/>
+                                </VerticalStackLayout>
+                                <Label Grid.Column="1" Text="●" FontSize="24" TextColor="{Binding SemaforoColor}" VerticalOptions="Center"/>
+                            </Grid>
+                        </Frame>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

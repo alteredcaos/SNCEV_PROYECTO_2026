@@ -1,0 +1,52 @@
+1. Verificar que SNCEV.Api esté ejecutándose
+En Windows, abre PowerShell en la carpeta del proyecto y ejecuta:
+--------------------------dotnet run --project .\src\SNCEV.Api\SNCEV.Api.csproj
+
+
+La consola debería mostrar algo parecido a:
+Now listening on: https://localhost:63730
+Now listening on: http://localhost:63731
+Application started.
+
+
+Deja esa consola abierta.
+En otra ventana de PowerShell, comprueba:
+------------------------            
+Test-NetConnection 127.0.0.1 -Port 63731
+
+
+El resultado esperado es:
+TcpTestSucceeded : True
+
+
+Si aparece False, la API no está escuchando en ese puerto.
+2. Restablecer el túnel USB ADB
+Este paso es especialmente importante: el túnel ADB puede desaparecer cuando desconectas el cable, reinicias el teléfono o se reinicia ADB.
+Con el Samsung conectado por USB, ejecuta:
+---------------------
+$adb = "C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe"
+& $adb devices
+
+
+Debe aparecer:
+List of devices attached
+RZCY70D7VNP    device
+
+
+Si aparece unauthorized, desbloquea el Samsung y acepta la autorización de depuración USB.
+Ahora ejecuta:
+-------------------
+& $adb -s RZCY70D7VNP reverse tcp:63731 tcp:63731
+
+
+Verifica el resultado:
+--------------
+& $adb -s RZCY70D7VNP reverse --list
+
+
+Debe aparecer una entrada con:
+tcp:63731 tcp:63731
+
+
+Esto permite que la aplicación Android acceda a la API de Windows mediante:
+http://127.0.0.1:63731

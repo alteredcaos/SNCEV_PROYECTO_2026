@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="SNCEV.MobileApp.Views.PacienteDetallePage"
+             Title="Expediente nominal"
+             BackgroundColor="#101820">
+    <Grid RowDefinitions="Auto,*">
+        <ActivityIndicator x:Name="IndicadorCarga" Grid.Row="0"
+                           Color="#64B5F6" IsRunning="False" IsVisible="False" />
+        <ScrollView Grid.Row="1">
+            <VerticalStackLayout Padding="18" Spacing="16">
+                <Label Text="Expediente del paciente" FontSize="25"
+                       FontAttributes="Bold" TextColor="#64B5F6" />
+                <Label x:Name="LblEstado" IsVisible="False" TextColor="#FFCC80" />
+
+                <Border BackgroundColor="#253545" Stroke="#425569" Padding="16">
+                    <VerticalStackLayout Spacing="8">
+                        <Label Text="DATOS PERSONALES" FontAttributes="Bold" TextColor="#64B5F6" />
+                        <Label x:Name="LblNombre" FontSize="22" FontAttributes="Bold" TextColor="White" />
+                        <Label x:Name="LblCurp" FontSize="15" TextColor="#CCCCCC" LineBreakMode="WordWrap" />
+                        <Label x:Name="LblNacimiento" TextColor="White" />
+                        <Label x:Name="LblEdad" TextColor="White" />
+                        <Label x:Name="LblSexo" TextColor="White" />
+                        <Label x:Name="LblEntidadNacimiento" TextColor="White" />
+                        <Label x:Name="LblTipoCartilla" FontAttributes="Bold" TextColor="#81C784" />
+                    </VerticalStackLayout>
+                </Border>
+
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                    <Button x:Name="BtnExpediente" Grid.Column="0" Text="Expediente"
+                            Clicked="OnExpedienteClicked" BackgroundColor="#1976D2" TextColor="White" />
+                    <Button x:Name="BtnEsquema" Grid.Column="1" Text="Esquema"
+                            Clicked="OnEsquemaClicked" BackgroundColor="#37474F" TextColor="White" />
+                </Grid>
+
+                <VerticalStackLayout x:Name="PanelExpediente" IsVisible="False" Spacing="14">
+                    <Label Text="Residencia y cartilla" FontSize="20" FontAttributes="Bold" TextColor="White" />
+                    <Border BackgroundColor="#253545" Stroke="#425569" Padding="15">
+                        <VerticalStackLayout Spacing="9">
+                            <Label Text="DOMICILIO VIGENTE" FontAttributes="Bold" TextColor="#64B5F6" />
+                            <Label x:Name="LblDomicilioEstado" TextColor="#FFCC80" />
+                            <Label x:Name="LblEstadoResidencia" TextColor="White" />
+                            <Label x:Name="LblMunicipio" TextColor="White" />
+                            <Label x:Name="LblLocalidad" TextColor="White" />
+                            <Label x:Name="LblColonia" TextColor="White" />
+                            <Label x:Name="LblCodigoPostal" TextColor="White" />
+                            <Label x:Name="LblDireccion" TextColor="White" />
+                            <Label x:Name="LblReferencia" TextColor="White" />
+                            <Label x:Name="LblAgeb" TextColor="White" />
+                            <Label x:Name="LblCvegeo" TextColor="White" />
+                            <Label x:Name="LblCoordenadas" TextColor="White" />
+                            <Label x:Name="LblUnidadCercana" TextColor="White" />
+                            <Button x:Name="BtnUbicacion"
+        Text="Ver ubicación del domicilio"
+        Clicked="OnVerUbicacionClicked"
+        IsEnabled="False"
+        BackgroundColor="#1976D2"
+        TextColor="White" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Label x:Name="LblTotalVacunas" Text="Historial de vacunación"
+                           FontSize="20" FontAttributes="Bold" TextColor="#81C784" />
+                    <VerticalStackLayout x:Name="ListaVacunas" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Stroke="#425569" Padding="14">
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding VacunaNombre}" FontSize="17"
+                                               FontAttributes="Bold" TextColor="White" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#CCCCCC" />
+                                        <Label Text="{Binding EstadoTexto}" TextColor="#FFCC80" />
+                                        <Label Text="{Binding Observaciones}" FontSize="12" TextColor="#BBBBBB" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinVacunas" Text="Sin aplicaciones registradas."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label Text="Somatometría" FontSize="20" FontAttributes="Bold" TextColor="White" />
+                    <Label x:Name="LblSomatometria" TextColor="#CCCCCC" />
+                    <Button Text="Registrar aplicación" IsEnabled="False"
+                            BackgroundColor="#287A36" TextColor="White" />
+                </VerticalStackLayout>
+
+                <VerticalStackLayout x:Name="PanelEsquema" IsVisible="False" Spacing="14">
+                    <Label Text="Evaluación del esquema" FontSize="21"
+                           FontAttributes="Bold" TextColor="#64B5F6" />
+                    <Label x:Name="LblFechaEvaluacion" TextColor="#CCCCCC" />
+                    <Grid ColumnDefinitions="*,*,*" ColumnSpacing="7">
+                        <Border Grid.Column="0" BackgroundColor="#234934" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroAplicadas" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Aplicadas" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                        <Border Grid.Column="1" BackgroundColor="#23465C" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroAplicables" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Aplicables" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                        <Border Grid.Column="2" BackgroundColor="#66502D" Padding="10">
+                            <VerticalStackLayout>
+                                <Label x:Name="LblNumeroProgramadas" FontSize="24" TextColor="White" HorizontalTextAlignment="Center" />
+                                <Label Text="Programadas" FontSize="12" TextColor="White" HorizontalTextAlignment="Center" />
+                            </VerticalStackLayout>
+                        </Border>
+                    </Grid>
+                    <Label x:Name="LblPendientesLocales" Text="Dosis locales pendientes: 0"
+                           TextColor="#FFCC80" FontSize="18" FontAttributes="Bold" />
+                    <VerticalStackLayout x:Name="ListaDosisPendientes" Spacing="8" />
+                    <Label Text="Dosis aplicables" FontSize="20" FontAttributes="Bold" TextColor="#81C784" />
+                    <VerticalStackLayout x:Name="ListaAplicables" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Padding="14">
+                                    <Border.GestureRecognizers>
+                                        <TapGestureRecognizer Tapped="OnDosisAplicableTapped" />
+                                    </Border.GestureRecognizers>
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding Vacuna}" TextColor="White" FontAttributes="Bold" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#81C784" />
+                                        <Label Text="{Binding Motivo}" TextColor="#CCCCCC" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinAplicables" Text="No hay dosis clasificadas como aplicables."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label Text="Dosis programadas" FontSize="20" FontAttributes="Bold" TextColor="#FFCC80" />
+                    <VerticalStackLayout x:Name="ListaProgramadas" Spacing="9">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border BackgroundColor="#253545" Stroke="#425569" Padding="14">
+                                    <VerticalStackLayout Spacing="6">
+                                        <Label Text="{Binding Vacuna}" TextColor="White" FontSize="17" FontAttributes="Bold" />
+                                        <Label Text="{Binding Descripcion}" TextColor="#FFCC80" />
+                                        <Label Text="{Binding FechaTexto}" TextColor="#CCCCCC" />
+                                        <Label Text="{Binding Motivo}" TextColor="White" />
+                                        <Label Text="{Binding Observaciones}" FontSize="12" TextColor="#BBBBBB" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </VerticalStackLayout>
+                    <Label x:Name="LblSinProgramadas" Text="No hay dosis programadas."
+                           TextColor="#CCCCCC" IsVisible="False" />
+                    <Label x:Name="LblAdvertencias" IsVisible="False" TextColor="#FFCC80" />
+                    <Label Text="Las fechas y estados son resultados del motor de reglas. Toda aplicación requiere validación clínica."
+                           FontSize="12" TextColor="#CCCCCC" />
+                </VerticalStackLayout>
+                <Button
+Text="📍 Ver en mapa"
+BackgroundColor="#1565C0"
+TextColor="White"
+CornerRadius="8"
+Clicked="OnVerEnMapaClicked"
+HorizontalOptions="Fill" />
+                <Button x:Name="BtnActualizar" Text="Actualizar información"
+                        Clicked="OnActualizarClicked" BackgroundColor="#37474F" TextColor="White" />
+                
+            </VerticalStackLayout>
+        </ScrollView>
+    </Grid>
+</ContentPage>

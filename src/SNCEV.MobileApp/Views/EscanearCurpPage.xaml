@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:zxing="clr-namespace:ZXing.Net.Maui.Controls;assembly=ZXing.Net.MAUI.Controls"
+    x:Class="SNCEV.MobileApp.Views.EscanearCurpPage"
+    Title="Escanear CURP"
+    BackgroundColor="#101820">
+
+    <Grid RowDefinitions="Auto,*,Auto"
+          Padding="12"
+          RowSpacing="12">
+
+        <Label
+            Grid.Row="0"
+            Text="Enfoca el QR superior de la constancia CURP"
+            TextColor="White"
+            FontSize="17"
+            HorizontalTextAlignment="Center" />
+
+        <Border Grid.Row="1"
+                Stroke="#1673C9"
+                StrokeThickness="2">
+
+            <zxing:CameraBarcodeReaderView
+                x:Name="LectorQr"
+                BarcodesDetected="OnBarcodesDetected" />
+        </Border>
+
+        <VerticalStackLayout
+            Grid.Row="2"
+            Spacing="10">
+
+            <Label
+                x:Name="LblEstado"
+                Text="Esperando código QR..."
+                TextColor="White"
+                HorizontalTextAlignment="Center" />
+
+            <Button
+                Text="Cancelar"
+                Clicked="OnCancelarClicked" />
+        </VerticalStackLayout>
+
+    </Grid>
+</ContentPage>
