@@ -49,6 +49,7 @@ builder.Services.AddSwaggerGen(options =>
 
 builder.Services.AddSingleton<AesEncryptionService>();
 builder.Services.AddScoped<MotorEsquemaVacunacionService>();
+builder.Services.AddScoped<AutorizacionCluesService>();
 builder.Services.AddSingleton<KmsSignatureService>();
 builder.Services.AddSingleton<IGeografiaService, GeografiaService>();
 builder.Services.AddScoped<IEstablecimientosService, EstablecimientosService>();
