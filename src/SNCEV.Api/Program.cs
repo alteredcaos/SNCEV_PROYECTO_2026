@@ -7,11 +7,81 @@ using SNCEV.Api.Services;
 using SNCEV.Api.Services.Geografia;
 using SNCEV.Api.Services.Establecimientos;
 using PdfSharp.Fonts;
+using SNCEV.Api.Middleware;
+using Microsoft.Data.SqlClient;
+
+//GlobalFontSettings.UseWindowsFontsUnderWindows = true;
+//var builder = WebApplication.CreateBuilder(args);
+
+
+//builder.Services.AddControllers();
+
+
 GlobalFontSettings.UseWindowsFontsUnderWindows = true;
+
 var builder = WebApplication.CreateBuilder(args);
+
+// ============================================
+// DIAGNÓSTICO TEMPORAL DE CONEXIÓN SQL SERVER
+// FASE 3C.3B-S
+// ============================================
+
+if (builder.Environment.IsDevelopment())
+{
+    var connectionString =
+        builder.Configuration.GetConnectionString("SqlServerConnection");
+
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        Console.WriteLine("[SNCEV SQL] SqlServerConnection no encontrada.");
+    }
+    else
+    {
+        var sql = new SqlConnectionStringBuilder(connectionString);
+
+        Console.WriteLine("======================================");
+        Console.WriteLine(" SNCEV - DIAGNÓSTICO SQL SERVER");
+        Console.WriteLine("======================================");
+        Console.WriteLine($"Servidor: {sql.DataSource}");
+        Console.WriteLine($"Base de datos: {sql.InitialCatalog}");
+        Console.WriteLine($"Seguridad integrada: {sql.IntegratedSecurity}");
+        Console.WriteLine($"Autenticación: {(sql.IntegratedSecurity ? "Windows" : "SQL/otra")}");
+
+        try
+        {
+            await using var conn = new SqlConnection(connectionString);
+            await conn.OpenAsync();
+
+            await using var cmd = new SqlCommand("""
+                SELECT
+                    ORIGINAL_LOGIN() AS login_original,
+                    SUSER_SNAME()    AS login_actual,
+                    USER_NAME()      AS usuario_base,
+                    IS_MEMBER('db_owner') AS es_db_owner
+                """, conn);
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+
+            if (await reader.ReadAsync())
+            {
+                Console.WriteLine($"Login original: {reader["login_original"]}");
+                Console.WriteLine($"Login actual: {reader["login_actual"]}");
+                Console.WriteLine($"Usuario BD: {reader["usuario_base"]}");
+                Console.WriteLine($"Es db_owner: {reader["es_db_owner"]}");
+            }
+        }
+        catch (SqlException ex)
+        {
+            Console.WriteLine($"[SNCEV SQL] Error de conexión. Código: {ex.Number}");
+        }
+
+        Console.WriteLine("======================================");
+    }
+}
 
 
 builder.Services.AddControllers();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -172,6 +242,7 @@ if (!app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
+app.UseMiddleware<ApiExceptionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
